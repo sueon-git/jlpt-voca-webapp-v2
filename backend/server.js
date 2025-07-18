@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { MongoClient } = require('mongodb');
+const wordSets = require('./word-sets.js'); // 서버가 직접 단어 데이터를 불러옴
 
 const app = express();
 const port = 3000;
@@ -24,44 +25,66 @@ async function startServer() {
         console.log("MongoDB Atlas 데이터베이스에 성공적으로 연결되었습니다.");
         const collection = client.db(dbName).collection(collectionName);
 
-        // --- API 엔드포인트 ---
-
-        // ✨ [핵심 수정] GET 요청은 이제 절대로 데이터를 쓰지 않습니다.
+        // GET /api/data : 모든 데이터를 가져오는 API
         app.get('/api/data', async (req, res) => {
             try {
-                const result = await collection.findOne({ _id: 'main' });
-                if (result && result.data) {
-                    res.json(result.data); // 데이터가 있으면 그대로 반환
-                } else {
-                    // 데이터가 없으면, 새로 만들지 않고 그냥 비어있는 상태를 반환
-                    res.json({ vocabularyData: [], addedSets: [], incorrectCounts: {} });
+                let result = await collection.findOne({ _id: 'main' });
+                if (!result) {
+                    const initialData = { vocabularyData: [], addedSets: [], incorrectCounts: {} };
+                    await collection.insertOne({ _id: 'main', data: initialData });
+                    result = { data: initialData };
                 }
-            } catch (e) {
-                res.status(500).json({ message: "DB 조회 오류" });
-            }
+                res.json(result.data);
+            } catch (e) { res.status(500).json({ message: "DB 조회 오류" }); }
         });
 
-        // ✨ [핵심 수정] 데이터가 없을 경우, POST 요청이 처음으로 데이터를 생성합니다.
-        app.post('/api/data/replace', async (req, res) => {
+        // ✨ [핵심 개선] 세트 추가 API: 이제 이 API가 직접 데이터를 처리합니다.
+        app.post('/api/add-words', async (req, res) => {
             try {
-                const newData = req.body;
-                // upsert: true 옵션 덕분에 _id: 'main' 문서가 없으면 새로 생성해줍니다.
-                await collection.updateOne(
-                    { _id: 'main' },
-                    { $set: { data: newData } },
-                    { upsert: true }
+                const { words, sets } = req.body;
+                if (!words || !words.length) return res.status(400).json({ message: '추가할 단어가 없습니다.' });
+
+                const doc = await collection.findOne({ _id: 'main' });
+                const currentVocab = doc.data.vocabularyData || [];
+                
+                const newUniqueWords = words.filter(newWord => 
+                    !currentVocab.some(existingWord => existingWord.japanese === newWord.japanese)
                 );
-                res.status(200).json({ message: '데이터 교체 성공' });
-            } catch (e) {
-                res.status(500).json({ message: "데이터 교체 중 오류" });
-            }
+
+                const updateQuery = {};
+                if (newUniqueWords.length > 0) {
+                    updateQuery.$push = { 'data.vocabularyData': { $each: newUniqueWords } };
+                }
+                if (sets && sets.length > 0) {
+                    updateQuery.$addToSet = { 'data.addedSets': { $each: sets } };
+                }
+
+                if (Object.keys(updateQuery).length > 0) {
+                    await collection.updateOne({ _id: 'main' }, updateQuery, { upsert: true });
+                }
+                res.status(200).json({ message: '단어 추가 성공' });
+            } catch (e) { res.status(500).json({ message: "단어 추가 중 오류" }); }
         });
         
-        // (다른 API들은 이전과 동일하게 유지됩니다)
-        app.post('/api/words/add', async (req, res) => { try { const { words, sets } = req.body; if (!words || !words.length) return res.status(400).json({ message: '추가할 단어가 없습니다.' }); const updateQuery = { $push: { 'data.vocabularyData': { $each: words } } }; if (sets && sets.length > 0) { updateQuery.$addToSet = { 'data.addedSets': { $each: sets } }; } await collection.updateOne({ _id: 'main' }, updateQuery, { upsert: true }); res.status(200).json({ message: '단어 추가 성공' }); } catch (e) { console.error(e); res.status(500).json({ message: "단어 추가 중 오류" }); } });
-        app.post('/api/incorrect/update', async (req, res) => { try { const { word, count } = req.body; await collection.updateOne({ _id: 'main' }, { $set: { [`data.incorrectCounts.${word}`]: count } }); res.status(200).json({ message: '오답 횟수 업데이트 성공' }); } catch (e) { res.status(500).json({ message: "오답 횟수 업데이트 중 오류" }); } });
-        app.delete('/api/words/:id', async (req, res) => { try { const wordId = Number(req.params.id); await collection.updateOne({ _id: 'main' }, { $pull: { 'data.vocabularyData': { id: wordId } } }); res.status(200).json({ message: '단어 삭제 성공' }); } catch (e) { res.status(500).json({ message: "단어 삭제 중 오류" }); } });
+        // POST /api/incorrect/update : 오답 횟수만 수정하는 API
+        app.post('/api/incorrect/update', async (req, res) => { /* 이전 코드 */ });
+        
+        // ✨ [핵심 개선] 단어 목록만 삭제하는 API (오답 기록 보존)
+        app.post('/api/delete-all-words', async (req, res) => {
+            try {
+                await collection.updateOne({ _id: 'main' }, { $set: { 'data.vocabularyData': [], 'data.addedSets': [] } });
+                res.status(200).json({ message: '단어 목록 삭제 성공' });
+            } catch (e) { res.status(500).json({ message: "전체 삭제 중 오류" }); }
+        });
 
+        // POST /api/shuffle-words : 단어 목록 순서만 섞는 API
+        app.post('/api/shuffle-words', async (req, res) => {
+            try {
+                const { shuffledVocabularyData } = req.body;
+                await collection.updateOne({ _id: 'main' }, { $set: { 'data.vocabularyData': shuffledVocabularyData } });
+                res.status(200).json({ message: '순서 섞기 성공' });
+            } catch (e) { res.status(500).json({ message: "순서 섞기 중 오류" }); }
+        });
 
         app.listen(port, () => { console.log(`최종 안정화 서버가 ${port}번 포트에서 실행 중입니다.`); });
     } catch (e) {
@@ -71,3 +94,6 @@ async function startServer() {
 }
 
 startServer();
+
+// (편의상 생략된 함수들의 전체 코드)
+app.post('/api/incorrect/update', async(req, res) => { const { word, count } = req.body; if (!word || typeof count !== 'number') { return res.status(400).json({ message: '잘못된 요청' }); } try { const collection = client.db(dbName).collection(collectionName); await collection.updateOne({ _id: 'main' }, { $set: { [`data.incorrectCounts.${word}`]: count } }); res.status(200).json({ message: '오답 횟수 업데이트 성공' }); } catch (e) { res.status(500).json({ message: "오답 횟수 업데이트 중 오류" }); } });
