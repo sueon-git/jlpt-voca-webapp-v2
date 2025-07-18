@@ -4,19 +4,16 @@ const API_BASE_URL = 'https://jlpt-voca-webapp-v2.onrender.com/api';
 async function loadDataFromServer() {
     try {
         const response = await fetch(`${API_BASE_URL}/data`);
-        if (!response.ok) throw new Error('서버 응답 오류');
         const data = await response.json();
         vocabularyData = data.vocabularyData || [];
         addedSets = new Set(data.addedSets || []);
         incorrectCounts = data.incorrectCounts || {};
-    } catch (error) {
-        console.error('데이터 로딩 실패:', error);
-        // 서버 연결 실패 시에도 UI는 그려져야 하므로 에러를 던지지 않음
-    } finally {
-        // ✨ 서버 통신 성공/실패 여부와 관계없이 항상 UI를 그림
         renderVocabulary();
         createSetButtons();
         updateSetButtons();
+    } catch (error) {
+        console.error('데이터 로딩 실패:', error);
+        createSetButtons();
     }
 }
 
@@ -39,17 +36,22 @@ async function handleAdd(newWords, newSetKeys = []) {
     }
 }
 
+function createWordObject(japanese, parts) {
+    // ✨ ID 생성 방식을 crypto.randomUUID()로 변경
+    return { id: crypto.randomUUID(), japanese, parts };
+}
+
 function addWordSet(setKey) {
     const setNumber = String(setKey);
     if (addedSets.has(setNumber) || !wordSets[setKey]) return;
     const lines = wordSets[setNumber].split('\n').filter(line => line.trim());
     const newWords = [];
-    lines.forEach((line, index) => {
+    lines.forEach(line => {
         const parts = line.split(',').map(part => part.trim());
         if (parts.length >= 4) {
             const [japanese, ...rest] = parts;
             if (japanese && !vocabularyData.some(word => word.japanese === japanese)) {
-                newWords.push({ id: Date.now() + index, japanese, parts: rest });
+                newWords.push(createWordObject(japanese, rest));
             }
         }
     });
@@ -61,12 +63,12 @@ function addWordsFromTextarea() {
     if (!batchText) return;
     const newWords = [];
     const lines = batchText.split('\n').filter(line => line.trim());
-    lines.forEach((line, index) => {
+    lines.forEach(line => {
         const parts = line.split(',').map(part => part.trim());
         if (parts.length >= 4) {
             const [japanese, ...rest] = parts;
             if (japanese && !vocabularyData.some(word => word.japanese === japanese)) {
-                newWords.push({ id: Date.now() + index, japanese, parts: rest });
+                newWords.push(createWordObject(japanese, rest));
             }
         }
     });
@@ -82,12 +84,12 @@ function addAllSets() {
     const newSets = allSetKeys.filter(key => !addedSets.has(String(key)));
     newSets.forEach(key => {
         const lines = wordSets[key].split('\n').filter(line => line.trim());
-        lines.forEach((line, index) => {
+        lines.forEach(line => {
             const parts = line.split(',').map(part => part.trim());
             if (parts.length >= 4) {
                 const [japanese, ...rest] = parts;
                 if (japanese && !vocabularyData.some(word => word.japanese === japanese) && !newWords.some(w => w.japanese === japanese)) {
-                    newWords.push({ id: Date.now() + index, japanese, parts: rest });
+                    newWords.push(createWordObject(japanese, rest));
                 }
             }
         });
@@ -106,12 +108,12 @@ function addRange() {
         if (wordSets[setKey] && !addedSets.has(setKey)) {
             newSets.push(setKey);
             const lines = wordSets[setKey].split('\n').filter(line => line.trim());
-            lines.forEach((line, index) => {
+            lines.forEach(line => {
                 const parts = line.split(',').map(part => part.trim());
                 if (parts.length >= 4) {
                     const [japanese, ...rest] = parts;
                     if (japanese && !vocabularyData.some(word => word.japanese === japanese) && !newWords.some(w => w.japanese === japanese)) {
-                        newWords.push({ id: Date.now() + index, japanese, parts: rest });
+                        newWords.push(createWordObject(japanese, rest));
                     }
                 }
             });
@@ -163,63 +165,11 @@ async function shuffleWords() {
     await loadDataFromServer();
 }
 
-function renderVocabulary() {
-    const listContainer = document.getElementById('vocabularyList');
-    document.getElementById('deleteAllBtn').disabled = vocabularyData.length === 0;
-    document.getElementById('shuffleBtn').disabled = vocabularyData.length < 2;
-    if (vocabularyData.length === 0) {
-        listContainer.innerHTML = `<div class="empty-state"><h3>저장된 단어가 없습니다.</h3></div>`;
-        return;
-    }
-    listContainer.innerHTML = vocabularyData.map(word => {
-        const [korean, hiragana, pronunciation, ...kanjiReadings] = word.parts || [];
-        const kanjiChars = word.japanese.match(/[\u4e-oo-\u9faf]/g) || [];
-        const kanjiHtml = kanjiChars.map((char, index) => {
-            const reading = (kanjiReadings && kanjiReadings[index]) ? kanjiReadings[index].replace(/:/g, '') : '';
-            return `<div class="kanji-item"><span class="kanji-char">${char}</span><span class="kanji-reading">${reading}</span></div>`;
-        }).join('');
-        const count = incorrectCounts[word.japanese] || 0;
-        const incorrectBadge = count > 0 ? `<span class="incorrect-badge">${count}</span>` : '';
-        return `<div class="vocab-item" id="item-${word.id}" onclick="toggleDetails(${word.id})"><div class="vocab-header"><div><span class="japanese-word">${word.japanese}</span>${incorrectBadge}</div><div><button class="incorrect-btn" onclick="markIncorrect(event, ${word.id})">오답</button><button class="delete-btn" onclick="deleteWord(event, ${word.id})">&times;</button></div></div><div class="vocab-details" id="details-${word.id}"><div class="vocab-main-details"><p><strong>뜻:</strong> ${korean || ''}</p><p><strong>히라가나:</strong> ${hiragana || ''}</p><p><strong>발음:</strong> ${pronunciation || ''}</p></div>${kanjiHtml ? `<div class="kanji-details">${kanjiHtml}</div>` : ''}</div></div>`;
-    }).join('');
-}
-
-function toggleDetails(wordId) {
-    const detailsElement = document.getElementById(`details-${wordId}`);
-    const itemElement = document.getElementById(`item-${wordId}`);
-    if (detailsElement && itemElement) {
-        detailsElement.classList.toggle('show');
-        itemElement.classList.toggle('revealed');
-    }
-}
-
-function createSetButtons() {
-    const buttonContainer = document.getElementById('wordSetButtons');
-    if (!buttonContainer || typeof wordSets === 'undefined') return;
-    const setKeys = Object.keys(wordSets);
-    buttonContainer.innerHTML = '';
-    setKeys.forEach(key => {
-        const button = document.createElement('button');
-        button.className = 'set-btn';
-        button.textContent = key;
-        button.onclick = () => addWordSet(key);
-        buttonContainer.appendChild(button);
-    });
-}
-
-function updateSetButtons() {
-    const buttons = document.querySelectorAll('.set-btn');
-    buttons.forEach(button => {
-        const setKey = button.textContent;
-        if (addedSets.has(setKey)) {
-            button.classList.add('added');
-            button.disabled = true;
-        } else {
-            button.classList.remove('added');
-            button.disabled = false;
-        }
-    });
-}
+// (이하 UI 렌더링 및 조작 함수는 이전과 동일)
+function renderVocabulary() { const listContainer = document.getElementById('vocabularyList'); document.getElementById('deleteAllBtn').disabled = vocabularyData.length === 0; document.getElementById('shuffleBtn').disabled = vocabularyData.length < 2; if (vocabularyData.length === 0) { listContainer.innerHTML = `<div class="empty-state"><h3>저장된 단어가 없습니다.</h3></div>`; return; } listContainer.innerHTML = vocabularyData.map(word => { const [korean, hiragana, pronunciation, ...kanjiReadings] = word.parts || []; const kanjiChars = word.japanese.match(/[\u4e00-\u9faf]/g) || []; const kanjiHtml = kanjiChars.map((char, index) => { const reading = (kanjiReadings && kanjiReadings[index]) ? kanjiReadings[index].replace(/:/g, '') : ''; return `<div class="kanji-item"><span class="kanji-char">${char}</span><span class="kanji-reading">${reading}</span></div>`; }).join(''); const count = incorrectCounts[word.japanese] || 0; const incorrectBadge = count > 0 ? `<span class="incorrect-badge">${count}</span>` : ''; return `<div class="vocab-item" id="item-${word.id}" onclick="toggleDetails('${word.id}')"><div class="vocab-header"><div><span class="japanese-word">${word.japanese}</span>${incorrectBadge}</div><div><button class="incorrect-btn" onclick="markIncorrect(event, '${word.id}')">오답</button><button class="delete-btn" onclick="deleteWord(event, '${word.id}')">&times;</button></div></div><div class="vocab-details" id="details-${word.id}"><div class="vocab-main-details"><p><strong>뜻:</strong> ${korean || ''}</p><p><strong>히라가나:</strong> ${hiragana || ''}</p><p><strong>발음:</strong> ${pronunciation || ''}</p></div>${kanjiHtml ? `<div class="kanji-details">${kanjiHtml}</div>` : ''}</div></div>`; }).join(''); }
+function toggleDetails(wordId) { const detailsElement = document.getElementById(`details-${wordId}`); const itemElement = document.getElementById(`item-${wordId}`); if (detailsElement && itemElement) { detailsElement.classList.toggle('show'); itemElement.classList.toggle('revealed'); } }
+function createSetButtons() { const buttonContainer = document.getElementById('wordSetButtons'); if (!buttonContainer || typeof wordSets === 'undefined') return; const setKeys = Object.keys(wordSets); buttonContainer.innerHTML = ''; setKeys.forEach(key => { const button = document.createElement('button'); button.className = 'set-btn'; button.textContent = key; button.onclick = () => addWordSet(key); buttonContainer.appendChild(button); }); }
+function updateSetButtons() { const buttons = document.querySelectorAll('.set-btn'); buttons.forEach(button => { const setKey = button.textContent; if (addedSets.has(setKey)) { button.classList.add('added'); button.disabled = true; } else { button.classList.remove('added'); button.disabled = false; } }); }
 
 document.addEventListener('DOMContentLoaded', () => {
     loadDataFromServer();
